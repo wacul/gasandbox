@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
@@ -33,9 +35,9 @@ var (
 	secretFile = Cmd.Flag("secret", "secret config file").Required().ExistingFile()
 	secret     = Secret{}
 
-	interval  = Cmd.Flag("interval", "interval second").Default("1.0").Float()
-	reqCount  = Cmd.Flag("count", "request count").Default("5").Int()
-	startDate = "2019-09-25"
+	concurrent = Cmd.Flag("concurrent", "concurrent count").Default("5").Int()
+	reqCount   = Cmd.Flag("count", "request count").Default("5").Int()
+	startDate  = "2019-09-25"
 
 	dateFormat = "2006-01-02"
 )
@@ -53,7 +55,6 @@ func main() {
 
 func run() error {
 	ctx := context.Background()
-	intervalSec := *interval * float64(time.Second)
 	start := time.Now()
 
 	service, err := newService(ctx)
@@ -66,21 +67,46 @@ func run() error {
 		return err
 	}
 
-	for i := 0; i < *reqCount; i++ {
+	var wg sync.WaitGroup
+	ch := make(chan error)
+	for i := 0; i < *reqCount; i += *concurrent {
+		fmt.Printf("all count: %v\n", i)
+
+		var errs *multierror.Error
+		go func() {
+			for i := 0; i < *concurrent; i++ {
+				err := <-ch
+				if err != nil {
+					errs = multierror.Append(errs, err)
+				}
+			}
+		}()
+
+		wg.Add(*concurrent)
 		reqStart := time.Now()
-		if err := doRequest(ctx, service, date); err != nil {
+		for count := 0; count < *concurrent; count++ {
+			fmt.Printf("concurrent: %v\n", count)
+			go func() {
+				ch <- doRequest(ctx, service, date)
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+
+		if err := errs.ErrorOrNil(); err != nil {
 			return err
 		}
-		reqSec := time.Since(reqStart).Seconds()
-		fmt.Printf("%03d: %vs\n", i, reqSec)
 
-		date = date.AddDate(-1, 0, 0)
-
-		time.Sleep(time.Duration(intervalSec))
+		took := time.Since(reqStart)
+		fmt.Printf("took: %vs\n", took.Seconds())
+		sleep := 1.0*time.Second - took
+		if sleep > 0 {
+			time.Sleep(sleep)
+			fmt.Printf("sleep: %vs\n", sleep.Seconds())
+		}
 	}
 
-	fmt.Println("")
-	fmt.Printf("%vs\n", time.Since(start).Seconds())
+	fmt.Printf("\n%vs\n", time.Since(start).Seconds())
 
 	return nil
 }
