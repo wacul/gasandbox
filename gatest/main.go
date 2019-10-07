@@ -35,8 +35,9 @@ var (
 	secretFile = Cmd.Flag("secret", "secret config file").Required().ExistingFile()
 	secret     = Secret{}
 
-	concurrent = Cmd.Flag("concurrent", "concurrent count").Default("5").Int()
+	concurrent = Cmd.Flag("concurrent", "concurrent count").Default("0").Int()
 	reqCount   = Cmd.Flag("count", "request count").Default("5").Int()
+	interval   = Cmd.Flag("interval", "interval second").Default("1.0").Float()
 	startDate  = "2019-09-25"
 
 	dateFormat = "2006-01-02"
@@ -54,6 +55,46 @@ func main() {
 }
 
 func run() error {
+	if *concurrent == 0 {
+		return doSequential()
+	}
+	return doConcurrent()
+}
+
+func doSequential() error {
+	ctx := context.Background()
+	intervalSec := *interval * float64(time.Second)
+	start := time.Now()
+
+	service, err := newService(ctx)
+	if err != nil {
+		return err
+	}
+
+	date, err := time.Parse(dateFormat, startDate)
+	if err != nil {
+		return err
+	}
+
+	for i := 1; i <= *reqCount; i++ {
+		reqStart := time.Now()
+		if err := doRequest(ctx, service, date); err != nil {
+			return err
+		}
+		reqSec := time.Since(reqStart).Seconds()
+		fmt.Printf("request %03d: took %vs\n", i, reqSec)
+
+		time.Sleep(time.Duration(intervalSec))
+		fmt.Printf("sleep %vs\n", *interval)
+	}
+
+	fmt.Println("")
+	fmt.Printf("all: took %vs\n", time.Since(start).Seconds())
+
+	return nil
+}
+
+func doConcurrent() error {
 	ctx := context.Background()
 	start := time.Now()
 
